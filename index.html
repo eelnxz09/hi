@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>StreetRunner: AI Edition</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- MediaPipe Pose -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap');
+        
+        body { margin: 0; overflow: hidden; background-color: #111; font-family: 'Orbitron', sans-serif; }
+        #game-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        
+        /* UI Overlays */
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; pointer-events: none; }
+        .interactive { pointer-events: auto; }
+        
+        /* HUD */
+        .hud-panel {
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(4px);
+            border: 1px solid rgba(0, 255, 255, 0.3);
+            color: #0ff;
+            text-shadow: 0 0 10px #0ff;
+        }
+
+        /* Webcam Preview */
+        #webcam-container {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 160px;
+            height: 120px;
+            border: 2px solid #0ff;
+            border-radius: 8px;
+            overflow: hidden;
+            background: #000;
+            z-index: 20;
+            display: none;
+            transform: scaleX(-1); /* Mirror for user comfort */
+        }
+        #webcam-video { width: 100%; height: 100%; object-fit: cover; }
+        
+        /* Loading Spinner */
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #0ff;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* AI Scan Effect */
+        .scan-line {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 4px;
+            background: #0ff;
+            box-shadow: 0 0 15px #0ff;
+            animation: scan 2s ease-in-out infinite;
+            opacity: 0;
+        }
+        @keyframes scan {
+            0% { top: 0%; opacity: 0; }
+            10% { opacity: 1; }
+            90% { opacity: 1; }
+            100% { top: 100%; opacity: 0; }
+        }
+
+        .crt-overlay {
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+            background-size: 100% 2px, 3px 100%;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Game Canvas -->
+    <div id="game-container"></div>
+    
+    <!-- CRT Effect Overlay -->
+    <div class="crt-overlay absolute inset-0 z-20"></div>
+
+    <!-- UI Layer -->
+    <div id="ui-layer" class="flex flex-col justify-between p-4">
+        
+        <!-- Top Bar -->
+        <div class="flex justify-between items-start">
+            <div class="hud-panel p-3 rounded-lg">
+                <div class="text-xs text-gray-400">SCORE</div>
+                <div id="score-display" class="text-2xl font-bold">000000</div>
+            </div>
+            <div class="hud-panel p-3 rounded-lg">
+                <div class="text-xs text-gray-400">COINS</div>
+                <div id="coin-display" class="text-xl font-bold text-yellow-400">0</div>
+            </div>
+        </div>
+
+        <!-- Main Menu Modal -->
+        <div id="menu-modal" class="absolute inset-0 flex items-center justify-center bg-black/80 interactive z-50">
+            <div class="bg-gray-900 border border-cyan-500 p-8 rounded-xl max-w-md w-full text-center shadow-2xl shadow-cyan-500/20">
+                <h1 class="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-purple-500 mb-2">NEO RUNNER</h1>
+                <p class="text-gray-400 text-sm mb-6">AI FASHION EDITION</p>
+
+                <!-- AI Try-On Section -->
+                <div class="bg-gray-800 rounded-lg p-4 mb-6 border border-gray-700">
+                    <h3 class="text-cyan-400 text-sm font-bold mb-2">1. AI OUTFIT GENERATION</h3>
+                    <div id="upload-area" class="border-2 border-dashed border-gray-600 rounded p-4 cursor-pointer hover:border-cyan-400 transition" onclick="triggerAI()">
+                        <div id="upload-text" class="text-gray-400 text-sm">
+                            <span class="text-2xl block mb-2">📸</span>
+                            Tap to Scan Body & Generate Fit
+                        </div>
+                        <div id="processing-ui" class="hidden">
+                            <div class="loader mx-auto mb-2"></div>
+                            <div class="text-xs text-cyan-300">ANALYZING BIOMETRICS...</div>
+                        </div>
+                    </div>
+                    <div id="generated-preview" class="hidden mt-4">
+                        <div class="relative w-full h-32 bg-gray-900 rounded overflow-hidden">
+                            <div class="scan-line"></div>
+                            <div class="absolute inset-0 flex items-center justify-center text-xs text-green-400">
+                                OUTFIT GENERATED: <span id="outfit-name" class="ml-1 font-bold text-white">...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Controls Selection -->
+                <div class="mb-6 text-left">
+                    <h3 class="text-cyan-400 text-sm font-bold mb-2">2. SELECT CONTROL MODE</h3>
+                    <div class="flex gap-2">
+                        <button onclick="setControl('keyboard')" id="btn-key" class="flex-1 bg-cyan-600 hover:bg-cyan-500 text-white py-2 rounded text-sm transition font-bold border border-cyan-400">
+                            KEYBOARD
+                        </button>
+                        <button onclick="setControl('camera')" id="btn-cam" class="flex-1 bg-gray-700 hover:bg-gray-600 text-white py-2 rounded text-sm transition border border-gray-600">
+                            BODY CAM (BETA)
+                        </button>
+                    </div>
+                    <p id="control-hint" class="text-xs text-gray-500 mt-2">Use Arrow Keys to Move/Jump</p>
+                </div>
+
+                <button onclick="startGame()" class="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white font-bold py-4 rounded-lg text-xl shadow-lg transform transition hover:scale-105">
+                    RUN NOW
+                </button>
+            </div>
+        </div>
+
+        <!-- Game Over Modal -->
+        <div id="game-over-modal" class="hidden absolute inset-0 flex items-center justify-center bg-black/90 interactive z-50">
+            <div class="text-center">
+                <h2 class="text-5xl font-bold text-red-500 mb-2">BUSTED</h2>
+                <p class="text-xl text-white mb-6">DISTANCE: <span id="final-score">0</span>m</p>
+                <button onclick="resetGame()" class="bg-white text-black font-bold py-3 px-8 rounded hover:bg-gray-200">TRY AGAIN</button>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Hidden Webcam Video Element (for processing) -->
+    <div id="webcam-container">
+        <video id="webcam-video" playsinline></video>
+        <canvas id="webcam-canvas" class="hidden"></canvas>
+    </div>
+
+    <script>
+        // --- CONFIGURATION & STATE ---
+        const CONFIG = {
+            lanes: [-2, 0, 2], // X positions
+            speed: 0.5,
+            maxSpeed: 1.2,
+            gravity: 0.03,
+            jumpForce: 0.5,
+            laneSwitchSpeed: 0.2
+        };
+
+        let state = {
+            isPlaying: false,
+            score: 0,
+            coins: 0,
+            speed: CONFIG.speed,
+            controlMode: 'keyboard', // 'keyboard' or 'camera'
+            currentLane: 1, // 0: Left, 1: Center, 2: Right
+            isJumping: false,
+            isSliding: false,
+            verticalVelocity: 0,
+            playerY: 0,
+            targetX: 0,
+            frame: 0
+        };
+
+        // --- THREE.JS SETUP ---
+        const container = document.getElementById('game-container');
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x110520, 0.04);
+        scene.background = new THREE.Color(0x110520);
+
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(0, 3, 6);
+        camera.lookAt(0, 1, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        container.appendChild(renderer.domElement);
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0x404040, 2); // Soft white light
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+        dirLight.position.set(5, 10, 7);
+        dirLight.castShadow = true;
+        scene.add(dirLight);
+
+        // Neon City Lights
+        const lightL = new THREE.PointLight(0x00ffff, 2, 20);
+        lightL.position.set(-5, 2, 5);
+        scene.add(lightL);
+        const lightR = new THREE.PointLight(0xff00ff, 2, 20);
+        lightR.position.set(5, 2, 5);
+        scene.add(lightR);
+
+        // --- GAME OBJECTS ---
+        
+        // Floor
+        const gridHelper = new THREE.GridHelper(200, 100, 0xff00ff, 0x222222);
+        gridHelper.position.z = -50;
+        scene.add(gridHelper);
+        
+        const floorGeo = new THREE.PlaneGeometry(20, 200);
+        const floorMat = new THREE.MeshPhongMaterial({ color: 0x1a1a1a });
+        const floor = new THREE.Mesh(floorGeo, floorMat);
+        floor.rotation.x = -Math.PI / 2;
+        floor.position.z = -50;
+        floor.receiveShadow = true;
+        scene.add(floor);
+
+        // Player (Procedural Humanoid)
+        const playerGroup = new THREE.Group();
+        
+        // Body
+        const bodyGeo = new THREE.BoxGeometry(0.8, 1, 0.4);
+        const bodyMat = new THREE.MeshStandardMaterial({ color: 0x333333 }); // Default Shirt
+        const body = new THREE.Mesh(bodyGeo, bodyMat);
+        body.position.y = 1.2;
+        body.castShadow = true;
+        playerGroup.add(body);
+
+        // Head
+        const headGeo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+        const headMat = new THREE.MeshStandardMaterial({ color: 0xffccaa }); // Skin tone
+        const head = new THREE.Mesh(headGeo, headMat);
+        head.position.y = 2.1;
+        playerGroup.add(head);
+
+        // Legs (Visual only, simple box for now)
+        const legsGeo = new THREE.BoxGeometry(0.7, 0.8, 0.4);
+        const legsMat = new THREE.MeshStandardMaterial({ color: 0x111111 }); // Pants
+        const legs = new THREE.Mesh(legsGeo, legsMat);
+        legs.position.y = 0.4;
+        playerGroup.add(legs);
+
+        scene.add(playerGroup);
+
+        // Obstacles & Coins Pool
+        const obstacles = [];
+        const coins = [];
+        const scenery = [];
+
+        // Materials
+        const obstacleMat = new THREE.MeshStandardMaterial({ color: 0xff0044, emissive: 0x440000 });
+        const coinMat = new THREE.MeshStandardMaterial({ color: 0xffd700, emissive: 0xaa6600 });
+        const coinGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.1, 16);
+        coinGeo.rotateX(Math.PI / 2);
+
+        // --- GAME LOGIC ---
+
+        function triggerAI() {
+            // Simulation of AI Processing
+            const uploadText = document.getElementById('upload-text');
+            const processing = document.getElementById('processing-ui');
+            const preview = document.getElementById('generated-preview');
+            const nameEl = document.getElementById('outfit-name');
+
+            uploadText.classList.add('hidden');
+            processing.classList.remove('hidden');
+
+            setTimeout(() => {
+                processing.classList.add('hidden');
+                preview.classList.remove('hidden');
+                
+                // Randomize Outfit
+                const palettes = [
+                    { name: 'NEON CYBER', shirt: 0x00ffff, pants: 0xff00ff },
+                    { name: 'TOKYO DRIFT', shirt: 0xff3333, pants: 0x111111 },
+                    { name: 'MIDNIGHT STEALTH', shirt: 0x222222, pants: 0x444444 },
+                    { name: 'VAPORWAVE', shirt: 0xff99cc, pants: 0x66ccff }
+                ];
+                const style = palettes[Math.floor(Math.random() * palettes.length)];
+                
+                nameEl.innerText = style.name;
+                
+                // Apply to 3D Model
+                body.material.color.setHex(style.shirt);
+                legs.material.color.setHex(style.pants);
+                
+                // Add a glow effect to shirt for "Cyber" feel
+                body.material.emissive = new THREE.Color(style.shirt);
+                body.material.emissiveIntensity = 0.2;
+
+            }, 2500);
+        }
+
+        function setControl(mode) {
+            state.controlMode = mode;
+            document.getElementById('btn-key').classList.remove('bg-cyan-600', 'border-cyan-400');
+            document.getElementById('btn-key').classList.add('bg-gray-700', 'border-gray-600');
+            document.getElementById('btn-cam').classList.remove('bg-cyan-600', 'border-cyan-400');
+            document.getElementById('btn-cam').classList.add('bg-gray-700', 'border-gray-600');
+            
+            if(mode === 'keyboard') {
+                document.getElementById('btn-key').classList.add('bg-cyan-600', 'border-cyan-400');
+                document.getElementById('control-hint').innerText = "Use Arrow Keys to Move/Jump";
+                document.getElementById('webcam-container').style.display = 'none';
+            } else {
+                document.getElementById('btn-cam').classList.add('bg-cyan-600', 'border-cyan-400');
+                document.getElementById('control-hint').innerText = "Stand back. Lean Left/Right to move. Squat to slide.";
+                document.getElementById('webcam-container').style.display = 'block';
+                initCamera();
+            }
+        }
+
+        function startGame() {
+            document.getElementById('menu-modal').classList.add('hidden');
+            state.isPlaying = true;
+            lastTime = performance.now();
+            animate();
+        }
+
+        function resetGame() {
+            // Reset State
+            state.score = 0;
+            state.coins = 0;
+            state.speed = CONFIG.speed;
+            state.currentLane = 1;
+            state.playerY = 0;
+            state.verticalVelocity = 0;
+            state.isJumping = false;
+            playerGroup.position.set(0, 0, 0);
+            
+            // Clear objects
+            obstacles.forEach(o => scene.remove(o.mesh));
+            coins.forEach(c => scene.remove(c.mesh));
+            obstacles.length = 0;
+            coins.length = 0;
+
+            document.getElementById('score-display').innerText = '000000';
+            document.getElementById('coin-display').innerText = '0';
+            document.getElementById('game-over-modal').classList.add('hidden');
+            
+            startGame();
+        }
+
+        function spawnObstacle() {
+            // Randomly pick a lane
+            const laneIdx = Math.floor(Math.random() * 3);
+            const laneX = CONFIG.lanes[laneIdx];
+            const zPos = -100; // Spawn far ahead
+
+            // Type: 0 = Barrier (Jump), 1 = High Barrier (Slide/Avoid), 2 = Train (Avoid)
+            const type = Math.random();
+
+            if (type < 0.6) {
+                // Standard Barrier
+                const geo = new THREE.BoxGeometry(1.5, 1, 1);
+                const mesh = new THREE.Mesh(geo, obstacleMat);
+                mesh.position.set(laneX, 0.5, zPos);
+                scene.add(mesh);
+                obstacles.push({ mesh, type: 'barrier', active: true });
+                
+                // Maybe add coins above
+                if (Math.random() > 0.5) spawnCoin(laneX, 2.5, zPos);
+
+            } else {
+                // Tall Pillar/Train
+                const geo = new THREE.BoxGeometry(1.5, 4, 4);
+                const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({color: 0x5500aa}));
+                mesh.position.set(laneX, 2, zPos);
+                scene.add(mesh);
+                obstacles.push({ mesh, type: 'wall', active: true });
+            }
+
+            // Always chance for coins in other lanes
+            const otherLane = (laneIdx + 1) % 3;
+            if(Math.random() > 0.3) spawnCoin(CONFIG.lanes[otherLane], 1, zPos);
+        }
+
+        function spawnCoin(x, y, z) {
+            const mesh = new THREE.Mesh(coinGeo, coinMat);
+            mesh.position.set(x, y, z);
+            scene.add(mesh);
+            coins.push({ mesh, active: true });
+        }
+
+        function handleInput(action) {
+            if (!state.isPlaying) return;
+
+            if (action === 'left' && state.currentLane > 0) state.currentLane--;
+            if (action === 'right' && state.currentLane < 2) state.currentLane++;
+            
+            if (action === 'jump' && !state.isJumping) {
+                state.verticalVelocity = CONFIG.jumpForce;
+                state.isJumping = true;
+            }
+            if (action === 'slide' && !state.isSliding) {
+                 // Squat visual
+                 playerGroup.scale.y = 0.5;
+                 state.isSliding = true;
+                 setTimeout(() => {
+                     playerGroup.scale.y = 1;
+                     state.isSliding = false;
+                 }, 800);
+            }
+        }
+
+        // Keyboard Listener
+        window.addEventListener('keydown', (e) => {
+            if(state.controlMode !== 'keyboard') return;
+            if (e.key === 'ArrowLeft') handleInput('left');
+            if (e.key === 'ArrowRight') handleInput('right');
+            if (e.key === 'ArrowUp') handleInput('jump');
+            if (e.key === 'ArrowDown') handleInput('slide');
+        });
+
+        // --- MEDIA PIPE VISION INTEGRATION ---
+        let pose;
+        let cameraFeed;
+
+        function initCamera() {
+            if(pose) return; // Already init
+
+            const videoElement = document.getElementById('webcam-video');
+            
+            pose = new Pose({locateFile: (file) => {
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+            }});
+            
+            pose.setOptions({
+                modelComplexity: 0, // 0 = Lite (Fastest), 1 = Full, 2 = Heavy
+                smoothLandmarks: true,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+            });
+
+            pose.onResults(onPoseResults);
+
+            cameraFeed = new Camera(videoElement, {
+                onFrame: async () => {
+                    await pose.send({image: videoElement});
+                },
+                width: 320,
+                height: 240
+            });
+            cameraFeed.start();
+        }
+
+        let lastActionTime = 0;
+        const ACTION_COOLDOWN = 500; // ms
+
+        function onPoseResults(results) {
+            if (!state.isPlaying || state.controlMode !== 'camera') return;
+            if (!results.poseLandmarks) return;
+
+            const now = Date.now();
+            if (now - lastActionTime < ACTION_COOLDOWN) return;
+
+            const landmarks = results.poseLandmarks;
+            const nose = landmarks[0];
+            const leftShoulder = landmarks[11];
+            const rightShoulder = landmarks[12];
+            
+            // Determine Center X (average of shoulders)
+            const centerX = (leftShoulder.x + rightShoulder.x) / 2;
+            const diffX = nose.x - centerX; // Local X position of head
+
+            // Thresholds
+            const LEAN_THRESHOLD = 0.1; 
+            const JUMP_Y_THRESHOLD = 0.3; // If shoulders go high (low Y value)
+
+            // Detect Lean
+            // Note: Camera is mirrored typically, so logic might need flip
+            if (diffX < -LEAN_THRESHOLD) {
+                handleInput('right'); // Mirrored
+                lastActionTime = now;
+            } else if (diffX > LEAN_THRESHOLD) {
+                handleInput('left');
+                lastActionTime = now;
+            }
+
+            // Detect Jump (using nose Y position relative to frame)
+            // If nose goes very high (small Y)
+            if (nose.y < 0.3) { // Top 30% of screen
+                handleInput('jump');
+                lastActionTime = now;
+            }
+            
+            // Detect Squat
+            if (nose.y > 0.7) { // Bottom 30%
+                handleInput('slide');
+                lastActionTime = now;
+            }
+        }
+
+        // --- MAIN LOOP ---
+        let lastTime = 0;
+        const fixedTimeStep = 1/60;
+
+        function animate(time) {
+            if (!state.isPlaying) return;
+            requestAnimationFrame(animate);
+
+            const delta = (time - lastTime) / 1000 || 0;
+            // Cap delta to prevent huge jumps
+            if (delta > 0.1) { lastTime = time; return; } 
+
+            // Update Logic
+            
+            // 1. Move Player Lateral
+            state.targetX = CONFIG.lanes[state.currentLane];
+            playerGroup.position.x += (state.targetX - playerGroup.position.x) * 0.15; // Smooth lerp
+            
+            // 2. Player Rotation (Tilt into turn)
+            playerGroup.rotation.z = (playerGroup.position.x - state.targetX) * -0.2;
+            playerGroup.rotation.x = 0.1; // Forward lean running
+
+            // 3. Gravity & Jumping
+            state.playerY += state.verticalVelocity;
+            state.verticalVelocity -= CONFIG.gravity;
+            
+            // Floor Collision
+            if (state.playerY <= 0) {
+                state.playerY = 0;
+                state.verticalVelocity = 0;
+                state.isJumping = false;
+            }
+            playerGroup.position.y = state.playerY;
+
+            // 4. Move Environment (simulate speed)
+            // In a real runner, we move objects towards player.
+            const moveSpeed = state.speed * 20 * delta; // Scale speed
+            
+            // Update Obstacles
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                const obs = obstacles[i];
+                obs.mesh.position.z += Math.max(0.5, moveSpeed * 30); // Move towards camera
+
+                // Collision
+                const pBox = new THREE.Box3().setFromObject(body); // Player bounds
+                const oBox = new THREE.Box3().setFromObject(obs.mesh);
+
+                // Shrink player box for leniency
+                pBox.expandByScalar(-0.2); 
+
+                if (pBox.intersectsBox(oBox)) {
+                    gameOver();
+                }
+
+                // Cleanup
+                if (obs.mesh.position.z > 10) {
+                    scene.remove(obs.mesh);
+                    obstacles.splice(i, 1);
+                }
+            }
+
+            // Update Coins
+            for (let i = coins.length - 1; i >= 0; i--) {
+                const c = coins[i];
+                c.mesh.position.z += Math.max(0.5, moveSpeed * 30);
+                c.mesh.rotation.y += 0.05; // Spin
+
+                // Collection
+                if (playerGroup.position.distanceTo(c.mesh.position) < 1.5) {
+                    state.coins++;
+                    document.getElementById('coin-display').innerText = state.coins;
+                    scene.remove(c.mesh);
+                    coins.splice(i, 1);
+                } else if (c.mesh.position.z > 10) {
+                    scene.remove(c.mesh);
+                    coins.splice(i, 1);
+                }
+            }
+
+            // Move Floor Texture/Grid (Simulated by resetting z)
+            gridHelper.position.z += moveSpeed * 30;
+            if(gridHelper.position.z > 0) gridHelper.position.z = -50;
+
+            // Spawning Logic
+            state.frame++;
+            if (state.frame % Math.floor(100 / state.speed) === 0) {
+                spawnObstacle();
+            }
+
+            // Difficulty Increase
+            state.speed += 0.0001;
+            state.score += Math.floor(state.speed * 10);
+            document.getElementById('score-display').innerText = state.score.toString().padStart(6, '0');
+
+            // Render
+            renderer.render(scene, camera);
+            lastTime = time;
+        }
+
+        function gameOver() {
+            state.isPlaying = false;
+            document.getElementById('final-score').innerText = state.score;
+            document.getElementById('game-over-modal').classList.remove('hidden');
+        }
+
+        // Handle Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Initialize Defaults
+        document.getElementById('btn-key').click();
+
+    </script>
+</body>
+</html>
